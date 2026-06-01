@@ -25,7 +25,9 @@ jobs:
       - name: Validate go mod / generate
         run: |
           go mod tidy
-          go install golang.org/x/tools/cmd/stringer@latest
+          # Pin stringer so the generated output only changes when the pin does.
+          # x/tools v0.38.0 is the oldest release that produces the committed file.
+          go install golang.org/x/tools/cmd/stringer@v0.38.0
           go generate ./...
           git --no-pager diff && [[ 0 -eq $(git status --porcelain | wc -l) ]]
 
