@@ -3,6 +3,8 @@ package otto
 import (
 	"fmt"
 	"regexp"
+	"regexp/syntax"
+	"unicode/utf8"
 
 	"github.com/robertkrimen/otto/parser"
 )
@@ -14,6 +16,12 @@ type regExpObject struct {
 	global            bool
 	ignoreCase        bool
 	multiline         bool
+
+	// after is regularExpression preceded by (?s:.), compiled on first use by
+	// regExpAfter. It is nil if the pattern does not need the text before the
+	// search offset as context.
+	after        *regexp.Regexp
+	afterChecked bool
 }
 
 func (rt *runtime) newRegExpObject(pattern string, flags string) *object {
@@ -97,7 +105,7 @@ func execRegExp(this *object, target string) (bool, []int) {
 	var result []int
 	if 0 > index || index > int64(len(target)) {
 	} else {
-		result = this.regExpValue().regularExpression.FindStringSubmatchIndex(target[index:])
+		result = this.regExpFind(target, int(index))
 	}
 
 	if result == nil {
@@ -105,20 +113,76 @@ func execRegExp(this *object, target string) (bool, []int) {
 		return false, nil
 	}
 
-	startIndex := index
-	endIndex := int(lastIndex) + result[1]
-	// We do this shift here because the .FindStringSubmatchIndex above
-	// was done on a local subordinate slice of the string, not the whole string
-	for index, offset := range result {
-		if offset != -1 {
-			result[index] += int(startIndex)
-		}
-	}
 	if global {
-		this.put("lastIndex", intValue(endIndex), true)
+		this.put("lastIndex", intValue(result[1]), true)
 	}
 
 	return true, result
+}
+
+// regExpFind returns the submatch indices in target of the leftmost match
+// that starts at or after byte offset index. As in JavaScript, ^, \b and \B
+// see the text before index rather than treating index as the start of input.
+func (o *object) regExpFind(target string, index int) []int {
+	re, start := o.regExpValue().regularExpression, index
+	if index > 0 {
+		_, w := utf8.DecodeLastRuneInString(target[:index])
+		// If index is inside a rune there is no rune to use as context.
+		if _, fw := utf8.DecodeRuneInString(target[index-w:]); fw == w {
+			if after := o.regExpAfter(); after != nil {
+				re, start = after, index-w
+			}
+		}
+	}
+
+	result := re.FindStringSubmatchIndex(target[start:])
+	if result == nil {
+		return nil
+	}
+	for i, offset := range result {
+		if offset != -1 {
+			result[i] += start
+		}
+	}
+	if start != index {
+		// Skip the context rune consumed by the (?s:.) prefix.
+		_, w := utf8.DecodeRuneInString(target[result[0]:])
+		result[0] += w
+	}
+	return result
+}
+
+// regExpAfter returns the regexp's pattern preceded by (?s:.), which matches
+// at an offset with the rune before it as context, or nil if the pattern has
+// no ^, \b or \B and so does not depend on the text before a match.
+func (o *object) regExpAfter() *regexp.Regexp {
+	value := o.regExpValue()
+	if !value.afterChecked {
+		value.afterChecked = true
+		pattern := value.regularExpression.String()
+		if parsed, err := syntax.Parse(pattern, syntax.Perl); err != nil || regExpNeedsContext(parsed) {
+			// If the prefixed pattern somehow fails to compile, fall back to
+			// searching without context.
+			value.after, _ = regexp.Compile(`(?s:.)(?:` + pattern + `)`)
+		}
+		o.value = value
+	}
+	return value.after
+}
+
+// regExpNeedsContext reports whether re contains an assertion that depends on
+// the text before the current position.
+func regExpNeedsContext(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpBeginText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true
+	}
+	for _, sub := range re.Sub {
+		if regExpNeedsContext(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func execResultToArray(rt *runtime, target string, result []int) *object {

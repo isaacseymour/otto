@@ -308,3 +308,19 @@ func TestRegExp_compile(t *testing.T) {
         `, "undefined")
 	})
 }
+
+func TestRegExp_lastIndexContext(t *testing.T) {
+	tt(t, func() {
+		test, _ := test()
+
+		test(`var re = /^a/g; re.lastIndex = 2; [re.exec("aaa"), re.lastIndex].join(",")`, ",0")
+		test(`var re = /\bb/g; re.lastIndex = 1; re.test("ab")`, false)
+		test(`var re = /\Bb/g; re.lastIndex = 1; var m = re.exec("ab"); [m.index, m[0], re.lastIndex].join(",")`, "1,b,2")
+		test(`var re = /^b/gm; re.lastIndex = 2; var m = re.exec("a\nb"); [m.index, re.lastIndex].join(",")`, "2,3")
+		test(`var re = /^b/gm; re.lastIndex = 1; re.test("ab\nb")`, true)
+		test(`re.lastIndex`, 4)
+		test(`var re = /(b)(c)?/g; re.lastIndex = 1; var m = re.exec("abc"); [m.index, m[0], m[1], m[2], re.lastIndex].join(",")`, "1,bc,b,c,3")
+		test(`var re = /\b\w/g; var s = "ab cd"; var out = []; var m; while ((m = re.exec(s)) !== null) out.push(m.index); out.join(",")`, "0,3")
+		test(`var re = /x*/g; re.lastIndex = 1; var m = re.exec("ab"); [m.index, m[0].length, re.lastIndex].join(",")`, "1,0,1")
+	})
+}
